@@ -5,7 +5,7 @@
 **Dupla:**
 
 - Gustavo Henrique — [@GustavoDaMassa](https://github.com/GustavoDaMassa)
-- _a preencher_ — _a preencher_
+- _a preencher_
 
 **Repositório:** https://github.com/GustavoDaMassa/saas-billing-refatoracao
 
@@ -97,6 +97,59 @@ descartável, fora do repositório), em 27 cenários de preço e de fluxo. Logs,
 2 casas ficaram idênticos, exceto o C25, como previsto. Os cenários de BLACKFRIDAY em novembro só passam a ser
 verificáveis com o `Clock` injetado (commit 3).
 
+### Commit 3 — Portas de infraestrutura e injeção de dependências
+
+Operações do catálogo: **Extract Interface** (as 4 portas), **Move Function** (SQL, regra do token e montagem do
+e-mail para os adaptadores), **Replace Constructor with Factory Function** (`BillingServiceFactory`),
+**Parameterize Function** (`Clock` em vez de `LocalDate.now()`) e **Replace Primitive with Object** (status da
+fatura vira o enum `InvoiceStatus`).
+
+Arquitetura hexagonal (portas e adaptadores):
+
+| Pacote | Classes | Responsabilidade |
+|---|---|---|
+| `com.saas.billing.port` | `CustomerRepository`, `InvoiceRepository`, `PaymentGateway`, `NotificationService`, `BillingInfrastructureException` | Contratos que o serviço usa; não conhecem JDBC nem SMTP |
+| `com.saas.billing.adapter` | `JdbcCustomerRepository`, `JdbcInvoiceRepository`, `SimulatedCardPaymentGateway`, `SmtpNotificationService` | Implementações de produção das portas |
+| `com.saas.billing` | `SubscriptionBillingService`, `BillingServiceFactory` | Serviço (recebe as portas e o `Clock` pelo construtor) e composição de produção |
+
+- **Porta extra `InvoiceRepository`:** a especificação cita três portas, mas o legado também grava em `invoices`.
+  Colocar esse INSERT no `CustomerRepository` misturaria duas tabelas e duas responsabilidades na mesma porta
+  (SRP). Cada porta corresponde a uma tabela ou serviço externo. Como o legado não usava transação explícita
+  (autocommit), usar conexões separadas para o SELECT e o INSERT não muda o resultado.
+- **`PaymentGateway.charge` devolve `boolean`:** é a única informação que o fluxo usa (PAID/FAILED). A regra do
+  legado (`token != null && token.startsWith("tok_")`) foi para o `SimulatedCardPaymentGateway`.
+- **`Clock` injetado:** o serviço usa `LocalDate.now(clock)`. Em produção, a fábrica passa
+  `Clock.systemDefaultZone()`; nos testes, `Clock.fixed(...)` torna BLACKFRIDAY e fidelidade determinísticos.
+- **Credenciais fora do código:** a `BillingServiceFactory` lê `BILLING_DB_URL`, `BILLING_DB_USER` e
+  `BILLING_DB_PASSWORD` (obrigatórias; se faltar alguma, falha logo na criação) e `BILLING_SMTP_HOST`,
+  `BILLING_SMTP_PORT` e `BILLING_SMTP_FROM` (opcionais, com os valores do legado como padrão, pois não são
+  segredos).
+- **Remoção do `catch (Exception e)`:** os adaptadores traduzem as exceções técnicas (`SQLException`,
+  `EmailException`) em `BillingInfrastructureException` (não checada), que copia a mensagem da causa e a mantém
+  encadeada. O serviço captura **apenas** essa exceção e registra o mesmo log de antes
+  (`Erro fatal no processamento: <msg>`). Bugs de programação (NPE etc.) deixam de ser engolidos. A alternativa,
+  propagar tudo, foi descartada porque mudaria a saída de negócio em falhas de infraestrutura.
+- **E-mail nulo:** no legado, um cliente sem e-mail gerava uma NPE dentro do `commons-email`, engolida pelo
+  `catch` genérico. Para manter o mesmo fluxo de negócio (pagamento, fatura gravada, linha de erro), o
+  `SmtpNotificationService` passou a verificar o nulo e lançar `BillingInfrastructureException`. Só o texto técnico
+  da mensagem muda: `e-mail do destinatário ausente`.
+- **`send()` continua desativado:** foi movido para o `SmtpNotificationService` com um TODO. Ativá-lo mudaria o
+  comportamento, porque passaria a exigir um SMTP real (smell #8, preservado e documentado).
+- **Construtor sem argumentos removido:** `new SubscriptionBillingService()` dá lugar a
+  `BillingServiceFactory.create()`. Manter o construtor vazio obrigaria o serviço a conhecer os adaptadores, o que
+  viola o DIP. A assinatura de 8 parâmetros do método continua disponível, como `@Deprecated`.
+- **Try-with-resources:** `Connection`, `PreparedStatement` e `ResultSet` são fechados em todos os adaptadores,
+  e o INSERT usa `setBigDecimal`.
+- **Fora do escopo deste commit:** o cálculo de preço continua dentro do serviço, e o método principal ainda passa
+  de 25 linhas. A extração do `PricingCalculator` e a redução do orquestrador são o commit 4.
+
+**Verificação:** o legado e o commit 3 foram executados contra o mesmo JDBC falso, com os adaptadores reais e o
+relógio fixado no mesmo dia, em 35 cenários de preço e de fluxo (incluindo falha de conexão, falha no INSERT,
+e-mail inválido e e-mail nulo). Os resultados são idênticos, com os valores normalizados para 2 casas, exceto o
+C25 (correção de imprecisão, commit 2) e o texto da mensagem do e-mail nulo. Com `Clock.fixed(2026-11-15)`, os
+23 cenários de preço conferem com a coluna **Money HALF_UP** da seção 4.1, incluindo BLACKFRIDAY, o piso zero e o
+C22.
+
 ---
 
 ## 4. Casos de caracterização
@@ -164,6 +217,9 @@ Exemplo com o cliente `c1`, e-mail `a@x.com` e base de R$ 100,00:
 | Token `tok_...` | `Pagamento processado com sucesso: R$ 100.0`, `E-mail disparado para: a@x.com` | `... R$ 100.00`, `E-mail disparado para: a@x.com` | `PAID` |
 | Token inválido ou nulo | `Falha no pagamento do cartão para: c1`, `E-mail disparado para: a@x.com` | idem | `FAILED` (gravada mesmo com falha) |
 | Falha no INSERT | `Pagamento processado com sucesso: R$ 100.0`, `Erro fatal no processamento: <msg>` | `... R$ 100.00`, `Erro fatal no processamento: <msg>` | não grava |
+| Falha de conexão com o banco | `Erro fatal no processamento: <msg>` | idem | não grava |
+| E-mail inválido no cadastro | `Pagamento processado com sucesso: R$ 100.0`, `Erro fatal no processamento: <msg do commons-email>` | `... R$ 100.00`, idem | `PAID` (gravada antes do e-mail) |
+| E-mail nulo no cadastro | `Pagamento processado com sucesso: R$ 100.0`, `Erro fatal no processamento: Cannot invoke "String.length()"...` (NPE engolida) | `... R$ 100.00`, `Erro fatal no processamento: e-mail do destinatário ausente` (a partir do commit 3) | `PAID` (gravada antes do e-mail) |
 | Data de adesão inválida | lança `DateTimeParseException`, sem logs | idem | não grava |
 
 Observação: o e-mail é montado, mas `send()` está comentado, e o log afirma o envio mesmo assim (smell #8).

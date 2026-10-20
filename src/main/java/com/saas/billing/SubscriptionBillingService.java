@@ -1,22 +1,38 @@
 package com.saas.billing;
 
 import com.saas.billing.domain.BillingCommand;
+import com.saas.billing.domain.Customer;
+import com.saas.billing.domain.InvoiceStatus;
 import com.saas.billing.domain.Money;
+import com.saas.billing.port.BillingInfrastructureException;
+import com.saas.billing.port.CustomerRepository;
+import com.saas.billing.port.InvoiceRepository;
+import com.saas.billing.port.NotificationService;
+import com.saas.billing.port.PaymentGateway;
 import java.math.BigDecimal;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
+import java.time.Clock;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
-import org.apache.commons.mail.SimpleEmail;
+import java.util.Optional;
 
 public class SubscriptionBillingService {
 
-    private static final String DB_URL = "jdbc:postgresql://localhost:5432/saas_db";
-    private static final String DB_USER = "admin";
-    private static final String DB_PASS = "admin123";
+    private final CustomerRepository customerRepository;
+    private final InvoiceRepository invoiceRepository;
+    private final PaymentGateway paymentGateway;
+    private final NotificationService notificationService;
+    private final Clock clock;
+
+    public SubscriptionBillingService(CustomerRepository customerRepository, InvoiceRepository invoiceRepository,
+                                      PaymentGateway paymentGateway, NotificationService notificationService,
+                                      Clock clock) {
+        this.customerRepository = customerRepository;
+        this.invoiceRepository = invoiceRepository;
+        this.paymentGateway = paymentGateway;
+        this.notificationService = notificationService;
+        this.clock = clock;
+    }
 
     /**
      * @deprecated use {@link #processMonthlyBilling(BillingCommand)}. Mantido para chamadores existentes;
@@ -37,7 +53,7 @@ public class SubscriptionBillingService {
 
         String customerId = command.customerId();
         LocalDate signupDate = command.signupDate();
-        LocalDate today = LocalDate.now();
+        LocalDate today = LocalDate.now(clock);
 
         int monthsActive = (today.getYear() - signupDate.getYear()) * 12 + (today.getMonthValue() - signupDate.getMonthValue());
 
@@ -72,49 +88,31 @@ public class SubscriptionBillingService {
 
         calculatedPrice = calculatedPrice.floorAtZero().rounded();
 
-        try (Connection conn = DriverManager.getConnection(DB_URL, DB_USER, DB_PASS)) {
-            String sqlCustomer = "SELECT email, status FROM customers WHERE id = ?";
-            PreparedStatement stmt = conn.prepareStatement(sqlCustomer);
-            stmt.setString(1, customerId);
-            ResultSet rs = stmt.executeQuery();
+        try {
+            Optional<Customer> foundCustomer = customerRepository.findById(customerId);
 
-            if (rs.next()) {
-                String email = rs.getString("email");
-                String status = rs.getString("status");
+            if (foundCustomer.isPresent()) {
+                Customer customer = foundCustomer.get();
 
-                if (!"ACTIVE".equalsIgnoreCase(status)) {
+                if (!"ACTIVE".equalsIgnoreCase(customer.status())) {
                     logs.add("Cliente inativo. Cobrança cancelada: " + customerId);
                     return logs;
                 }
 
-                String paymentCardToken = command.paymentCardToken();
-                boolean paymentSuccess = false;
-                if (paymentCardToken != null && paymentCardToken.startsWith("tok_")) {
-                    paymentSuccess = true;
+                boolean paymentSuccess = paymentGateway.charge(command.paymentCardToken(), calculatedPrice);
+                if (paymentSuccess) {
                     logs.add("Pagamento processado com sucesso: R$ " + calculatedPrice);
                 } else {
                     logs.add("Falha no pagamento do cartão para: " + customerId);
                 }
 
-                String sqlInvoice = "INSERT INTO invoices(customer_id, amount, status, created_at) VALUES (?, ?, ?, NOW())";
-                PreparedStatement stmtInvoice = conn.prepareStatement(sqlInvoice);
-                stmtInvoice.setString(1, customerId);
-                stmtInvoice.setBigDecimal(2, calculatedPrice.amount());
-                stmtInvoice.setString(3, paymentSuccess ? "PAID" : "FAILED");
-                stmtInvoice.executeUpdate();
+                invoiceRepository.save(customerId, calculatedPrice, paymentSuccess ? InvoiceStatus.PAID : InvoiceStatus.FAILED);
 
-                SimpleEmail emailSender = new SimpleEmail();
-                emailSender.setHostName("smtp.empresa.com");
-                emailSender.setSmtpPort(587);
-                emailSender.setFrom("billing@empresa.com");
-                emailSender.setSubject("Sua Fatura Mensal");
-                emailSender.setMsg("Olá! Sua fatura foi processada no valor de R$ " + calculatedPrice);
-                emailSender.addTo(email);
-                // emailSender.send();
+                notificationService.sendInvoice(customer.email(), calculatedPrice);
 
-                logs.add("E-mail disparado para: " + email);
+                logs.add("E-mail disparado para: " + customer.email());
             }
-        } catch (Exception e) {
+        } catch (BillingInfrastructureException e) {
             logs.add("Erro fatal no processamento: " + e.getMessage());
         }
 
