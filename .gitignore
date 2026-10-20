@@ -1,0 +1,14 @@
+# Build
+target/
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# Segredos e SO
+.env
+.DS_Store
