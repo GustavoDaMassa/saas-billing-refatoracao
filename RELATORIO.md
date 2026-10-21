@@ -196,8 +196,10 @@ C22.
 
 ### Commit 4 — Extração da precificação e validação automatizada
 
-**Responsável:** Caio Barbosa Dias. Implementação local validada; commit e execução
-remota da CI ainda não confirmados na data desta versão do relatório.
+**Responsável:** Caio Barbosa Dias. Implementação registrada no commit
+`628477d80dd2ba98efc240baa5a2489ffda2299f`, publicada na branch
+`refactor/caio-pricing-tests` e submetida pelo Pull Request #1.
+A CI do pull request foi concluída com sucesso em 21/10/2026.
 
 Operações aplicadas: **Extract Class**, **Extract Method** e **Replace Magic Literal**.
 
@@ -249,8 +251,8 @@ mvn --batch-mode --no-transfer-progress -DfailIfNoTests=true clean verify
 
 A preparação do ambiente pode baixar ferramentas e dependências. A independência
 exigida refere-se à ausência de banco e SMTP necessários à execução dos testes.
-A execução remota deve ser conferida no GitHub Actions após o envio do commit;
-o resultado local não foi apresentado como resultado remoto.
+A execução remota da CI foi concluída com sucesso no GitHub Actions, com Java 17.
+Evidência: https://github.com/GustavoDaMassa/saas-billing-refatoracao/actions/runs/39672870045
 
 #### Limites da preservação de comportamento
 
@@ -392,14 +394,14 @@ d5d88d96f565fbf08894b3c785fff25029214f29ccb983aa90859c708bb58c47
 | 1 — Código legado | `87ef839` | Gustavo |
 | 2 — Value Objects | `713e59d` | Gustavo |
 | 3 — Portas e injeção de dependências | `45bd102` | Gustavo |
-| 4 — Precificação, testes e fechamento do relatório | Implementação local na branch `refactor/caio-pricing-tests`; hash ainda não atribuído | Caio |
+| 4 — Precificação, testes e fechamento do relatório | `628477d` | Caio |
 
-Mensagem prevista para o commit 4:
+Mensagem do commit 4:
 
 ```text
 refactor: extrai motor de precificação e adiciona suíte verde
 ```
 
-**Situação em 21/10/2026:** implementação e suíte validadas localmente; métricas e
-cobertura coletadas. Restam registrar/enviar o commit e verificar a execução remota
-da CI antes da entrega do link do repositório no SIGAA.
+**Situação em 20/10/2026:** implementação, testes, métricas e cobertura registrados.
+Commit de Caio publicado e CI do Pull Request #1 concluída com sucesso.
+Resta integrar o pull request à main e entregar o link do repositório no SIGAA.
